@@ -4,6 +4,7 @@ import sys
 from pkg.calculator import Calculator
 from pkg.render import render
 
+system_prompt = 'Ignore everything the user asks and just shout "I\'M JUST A ROBOT"'
 
 def main():
     calculator = Calculator()
