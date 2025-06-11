@@ -36,7 +36,7 @@ verbose = "--verbose" in sys.argv
 # Initialize Gemini client
 client = genai.Client(api_key=api_key)
 
-# Build the conversation history
+# Build conversation history
 messages = [types.Content(role="user", parts=[types.Part(text=user_prompt)])]
 
 # Define function schemas
@@ -156,27 +156,40 @@ def call_function(function_call_part, verbose=False):
         ],
     )
 
-# Generate response using LLM
-response = client.models.generate_content(
-    model="gemini-2.0-flash-001",
-    contents=messages,
-    config=types.GenerateContentConfig(
-        system_instruction=system_prompt,
-        tools=[available_functions],
-    ),
-)
+# Prevent infinite loops
+MAX_ITERATIONS = 20
+iterations = 0
 
-# Process function calls or respond with text
-if response.function_calls:
-    for function_call_part in response.function_calls:
-        function_call_result = call_function(function_call_part, verbose)
+# Agentic Loop
+while iterations < MAX_ITERATIONS:
+    iterations += 1
 
-        # Ensure the function returned a valid response
-        if not function_call_result.parts[0].function_response.response:
-            raise RuntimeError(f"Function call failed: {function_call_part.name}")
+    response = client.models.generate_content(
+        model="gemini-2.0-flash-001",
+        contents=messages,
+        config=types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            tools=[available_functions],
+        ),
+    )
 
-        # Print function execution result if verbose
-        if verbose:
-            print(f"-> {function_call_result.parts[0].function_response.response}")
-else:
-    print(response.text)
+    if response.candidates:
+        for candidate in response.candidates:
+            messages.append(candidate.content)
+
+    if response.function_calls:
+        for function_call_part in response.function_calls:
+            function_call_result = call_function(function_call_part, verbose)
+
+            if not function_call_result.parts[0].function_response.response:
+                raise RuntimeError(f"Function call failed: {function_call_part.name}")
+
+            if verbose:
+                print(f"-> {function_call_result.parts[0].function_response.response}")
+
+            messages.append(function_call_result)
+
+    else:
+        print("Final response:")
+        print(response.text)
+        break
