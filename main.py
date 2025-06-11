@@ -2,7 +2,11 @@ import os
 import sys
 from dotenv import load_dotenv
 from google import genai
-from google.genai import types  # Needed for message formatting and system prompt config
+from google.genai import types  # Import types for message formatting and system prompt config
+from functions.get_files_info import get_files_info
+from functions.get_file_content import get_file_content
+from functions.run_python import run_python_file
+from functions.write_file import write_file
 
 # Load environment variables from .env file
 load_dotenv()
@@ -25,7 +29,17 @@ if len(sys.argv) < 2:
     print("Error: Please provide a prompt as a command-line argument.")
     sys.exit(1)
 
-# Define the Function Schemas
+# Extract command-line arguments
+user_prompt = sys.argv[1]
+verbose = "--verbose" in sys.argv
+
+# Initialize Gemini client
+client = genai.Client(api_key=api_key)
+
+# Build the conversation history
+messages = [types.Content(role="user", parts=[types.Part(text=user_prompt)])]
+
+# Define function schemas
 schema_get_files_info = types.FunctionDeclaration(
     name="get_files_info",
     description="Lists files in the specified directory along with their sizes, constrained to the working directory.",
@@ -86,7 +100,7 @@ schema_write_file = types.FunctionDeclaration(
     ),
 )
 
-# Define the available functions for the AI to call
+# Define available functions
 available_functions = types.Tool(
     function_declarations=[
         schema_get_files_info,
@@ -96,42 +110,73 @@ available_functions = types.Tool(
     ]
 )
 
-# Extract command-line arguments
-user_prompt = sys.argv[1]
-verbose = "--verbose" in sys.argv
+# Function to dynamically execute an LLM-chosen function
+def call_function(function_call_part, verbose=False):
+    function_name = function_call_part.name
+    function_args = function_call_part.args
 
-# Initialize Gemini client
-client = genai.Client(api_key=api_key)
+    # Add working directory manually (LLM doesn't specify it)
+    function_args["working_directory"] = "./calculator"
 
-# Build the conversation history (for now, it's just one user message)
-messages = [
-    types.Content(role="user", parts=[types.Part(text=user_prompt)]),
-]
+    # Map function names to actual functions
+    function_map = {
+        "get_files_info": get_files_info,
+        "get_file_content": get_file_content,
+        "run_python_file": run_python_file,
+        "write_file": write_file,
+    }
 
-# Generate response using system prompt
+    # Handle verbose output
+    if verbose:
+        print(f"Calling function: {function_name}({function_args})")
+    else:
+        print(f" - Calling function: {function_name}")
+
+    # Execute function if valid
+    if function_name in function_map:
+        function_result = function_map[function_name](**function_args)
+    else:
+        return types.Content(
+            role="tool",
+            parts=[
+                types.Part.from_function_response(
+                    name=function_name,
+                    response={"error": f"Unknown function: {function_name}"},
+                )
+            ],
+        )
+
+    return types.Content(
+        role="tool",
+        parts=[
+            types.Part.from_function_response(
+                name=function_name,
+                response={"result": function_result},
+            )
+        ],
+    )
+
+# Generate response using LLM
 response = client.models.generate_content(
     model="gemini-2.0-flash-001",
     contents=messages,
     config=types.GenerateContentConfig(
         system_instruction=system_prompt,
         tools=[available_functions],
-    )
+    ),
 )
 
+# Process function calls or respond with text
 if response.function_calls:
     for function_call_part in response.function_calls:
-        print(f"Calling function: {function_call_part.name}({function_call_part.args})")
+        function_call_result = call_function(function_call_part, verbose)
+
+        # Ensure the function returned a valid response
+        if not function_call_result.parts[0].function_response.response:
+            raise RuntimeError(f"Function call failed: {function_call_part.name}")
+
+        # Print function execution result if verbose
+        if verbose:
+            print(f"-> {function_call_result.parts[0].function_response.response}")
 else:
     print(response.text)
-
-# Print verbose output first if enabled
-if verbose:
-    print(f"User prompt: {user_prompt}")
-
-# Print model response
-print(response.text)
-
-# Print token usage if verbose
-if verbose:
-    print(f"Prompt tokens: {response.usage_metadata.prompt_token_count}")
-    print(f"Response tokens: {response.usage_metadata.candidates_token_count}")
